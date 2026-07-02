@@ -69,3 +69,25 @@ The project is packaged for containerized deployment.
 3. Set the environment variable:
    * **`ANTHROPIC_API_KEY`** (for Claude deployments) OR
    * **`GEMINI_API_KEY`** (for Gemini deployments)
+
+---
+
+## 🌐 Deployed Live Service (for Graders)
+
+The service is currently running live on Render:
+* **Base URL**: `https://conversational-shl-assessment-recommender-qffs.onrender.com`
+
+### 1. Test Health Endpoint (`GET /health`)
+```bash
+curl https://conversational-shl-assessment-recommender-qffs.onrender.com/health
+```
+* **Expected response**: `{"status": "ok"}`
+
+### 2. Test Chat Endpoint (`POST /chat`)
+To test a stateless dialogue turn:
+```bash
+curl -X POST https://conversational-shl-assessment-recommender-qffs.onrender.com/chat \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "I need to hire a Java developer"}]}'
+```
+
