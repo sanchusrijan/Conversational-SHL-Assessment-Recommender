@@ -18,7 +18,7 @@ if os.path.exists(".env"):
     except Exception as e:
         print(f"Warning: Failed to load .env file: {e}")
 
-TRACES_DIR = "/Users/sasikala/Desktop/SHL/GenAI_SampleConversations 2"
+TRACES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GenAI_SampleConversations 2")
 
 def parse_trace_file(filepath: str) -> List[Tuple[str, List[str], bool]]:
     with open(filepath, 'r', encoding='utf-8') as f:

@@ -3,8 +3,8 @@ import re
 import os
 from typing import List, Dict, Any, Optional
 
-CATALOG_PATH = "/Users/sasikala/Desktop/SHL/shl_product_catalog.json"
-TRACE_RECS_PATH = "/Users/sasikala/Desktop/SHL/trace_recommendations.json"
+CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shl_product_catalog.json")
+TRACE_RECS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trace_recommendations.json")
 
 KEY_TO_CODE = {
     "Ability & Aptitude": "A",
