@@ -14,41 +14,28 @@ logger = logging.getLogger(__name__)
 class RecommenderAgent:
     def __init__(self, catalog_manager: CatalogManager):
         self.catalog_manager = catalog_manager
-        # Initialize Anthropic client if key is present
         self.anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         self.client = None
         if self.anthropic_key and self.anthropic_key != "MOCK_KEY":
             self.client = AsyncAnthropic(api_key=self.anthropic_key)
             
-        # Initialize Gemini settings
         self.gemini_key = os.environ.get("GEMINI_API_KEY")
-        self.gemini_model = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+        self.gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
     def _extract_active_recommendations(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """
-        Scan conversation history backwards to extract the most recent recommended products
-        by matching URLs found in assistant messages.
-        """
         active = []
         for msg in reversed(messages):
             if msg.get("role") == "assistant":
-                # Find all product catalog URLs in the assistant message
                 urls = re.findall(r'https://www.shl.com/products/product-catalog/view/[a-zA-Z0-9\-_]+/?', msg.get("content", ""))
                 if urls:
                     for url in urls:
-                        # Clean and lookup product
                         prod = self.catalog_manager.get_product_by_url(url.strip())
                         if prod and prod not in active:
                             active.append(prod)
-                    # Stop searching once we find the most recent message with recommended product URLs
                     break
         return active
 
     def _extract_comparison_queries(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """
-        Scan history to check if the user is asking to compare specific assessments.
-        If yes, retrieve those products from the catalog to ensure their details are in context.
-        """
         found = []
         if not messages:
             return found
@@ -59,20 +46,15 @@ class RecommenderAgent:
                 last_user_msg = msg.get("content", "")
                 break
                 
-        # Look for product names mentioned in the query
         last_user_lower = last_user_msg.lower()
         for prod in self.catalog_manager.products:
             prod_name_lower = prod["name"].lower()
-            # Simple substring match for distinct names longer than 3 characters
             if len(prod_name_lower) > 3 and prod_name_lower in last_user_lower:
                 if prod not in found:
                     found.append(prod)
         return found
 
     def _build_system_prompt(self, candidates: List[Dict[str, Any]], active_list: List[Dict[str, Any]], turn_count: int) -> str:
-        """Construct the prompt template instructing the LLM how to act and return structured JSON."""
-        
-        # Format the candidates database
         candidates_str = ""
         for idx, prod in enumerate(candidates, 1):
             candidates_str += f"[{idx}] NAME: {prod['name']}\n"
@@ -83,7 +65,6 @@ class RecommenderAgent:
             candidates_str += f"    LANGUAGES: {', '.join(prod['languages'])}\n"
             candidates_str += f"    DESCRIPTION: {prod['description']}\n\n"
 
-        # Format active list if any
         active_list_str = ""
         if active_list:
             active_list_str = "\n".join([f"- {p['name']} ({p['link']})" for p in active_list])
@@ -162,12 +143,10 @@ You must respond with a single, valid JSON object matching the schema below. Do 
         return prompt
 
     async def _call_gemini_api(self, system_prompt: str, messages: List[Dict[str, str]], api_key: str) -> str:
-        """Call Gemini API generateContent endpoint via raw HTTP requests."""
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent?key={api_key}"
         
         contents = []
         for msg in messages:
-            # Gemini roles must be user or model
             role = "user" if msg["role"] == "user" else "model"
             contents.append({
                 "role": role,
@@ -196,7 +175,6 @@ You must respond with a single, valid JSON object matching the schema below. Do 
                 raise ValueError(f"Failed to parse text from Gemini response structure: {result}. Error: {err}")
 
     async def _call_claude_api(self, system_prompt: str, messages: List[Dict[str, str]]) -> str:
-        """Call Anthropic Claude API Messages endpoint."""
         if not self.client:
             raise ValueError("Anthropic client is not initialized. Please verify ANTHROPIC_API_KEY.")
             
@@ -212,43 +190,34 @@ You must respond with a single, valid JSON object matching the schema below. Do 
         return response.content[0].text.strip()
 
     async def process_chat(self, messages: List[Dict[str, str]]) -> ChatResponse:
-        """Stateless multi-turn logic to process incoming messages and produce a ChatResponse."""
         turn_count = len(messages)
         
-        # 1. Extract active shortlist from history
         active_list = self._extract_active_recommendations(messages)
         
-        # 2. Retrieve candidates based on current and prior user inputs
         user_queries = [msg["content"] for msg in messages if msg.get("role") == "user"]
-        combined_query = " ".join(user_queries[-2:]) if user_queries else "" # Focus on last two turns
+        combined_query = " ".join(user_queries[-2:]) if user_queries else ""
         
         candidates = self.catalog_manager.search(combined_query, limit=25)
         
-        # Ensure any active recommendations are in the candidates list
         candidate_urls = {p["link"].lower().strip() for p in candidates}
         for act_prod in active_list:
             if act_prod["link"].lower().strip() not in candidate_urls:
                 candidates.append(act_prod)
                 
-        # Ensure comparison products are in context if applicable
         comp_prods = self._extract_comparison_queries(messages)
         for comp_prod in comp_prods:
             if comp_prod["link"].lower().strip() not in candidate_urls:
                 candidates.append(comp_prod)
 
-        # 3. Format system prompt
         system_prompt = self._build_system_prompt(candidates, active_list, turn_count)
         
-        # Check active provider configuration
         has_gemini = bool(self.gemini_key)
         has_claude = self.anthropic_key and self.anthropic_key != "MOCK_KEY"
         
         if not has_gemini and not has_claude:
-            # Fall back to offline mock generation
             logger.warning("No API keys found. Falling back to offline mock response.")
             return self._generate_stub_response(messages, active_list, turn_count)
 
-        # Self-correction retry loop
         max_attempts = 3
         current_attempt = 0
         error_context = ""
@@ -259,7 +228,6 @@ You must respond with a single, valid JSON object matching the schema below. Do 
                 if error_context:
                     system_with_retry += f"\n\nWARNING: Your previous response caused validation errors: {error_context}. Please correct your output and return strict JSON matching the schema."
 
-                # Get response from the configured LLM provider
                 if has_gemini:
                     logger.info(f"Invoking Gemini API ({self.gemini_model}) via HTTP...")
                     content_text = await self._call_gemini_api(system_with_retry, messages, self.gemini_key)
@@ -267,17 +235,12 @@ You must respond with a single, valid JSON object matching the schema below. Do 
                     logger.info("Invoking Anthropic Claude API...")
                     content_text = await self._call_claude_api(system_with_retry, messages)
                 
-                # Parse JSON response
-                # Clean up markdown code fence wrapper if LLM outputs it anyway
                 if content_text.startswith("```"):
                     content_text = re.sub(r'^```(?:json)?\n|```$', '', content_text, flags=re.MULTILINE).strip()
                 
                 json_data = json.loads(content_text)
-                
-                # Validate with Pydantic
                 chat_res = ChatResponse.model_validate(json_data)
                 
-                # Double-check recommendation grounding against catalog
                 verified_recs = []
                 for rec in chat_res.recommendations:
                     matched = self.catalog_manager.get_product_by_url(rec.url)
@@ -298,7 +261,6 @@ You must respond with a single, valid JSON object matching the schema below. Do 
                 error_context = f"Error during attempt {current_attempt}: {str(e)}"
                 logger.error(f"Validation attempt {current_attempt} failed: {e}")
                 
-        # Fallback response on failure
         return ChatResponse(
             reply="I encountered an issue processing your request. Please try again.",
             recommendations=[],
@@ -306,7 +268,6 @@ You must respond with a single, valid JSON object matching the schema below. Do 
         )
 
     def _generate_stub_response(self, messages: List[Dict[str, str]], active_list: List[Dict[str, Any]], turn_count: int) -> ChatResponse:
-        """Fallback mock recommender stub when no API keys are set."""
         last_msg = messages[-1]["content"].lower() if messages else ""
         
         if "senior leadership" in last_msg or "cxo" in last_msg:

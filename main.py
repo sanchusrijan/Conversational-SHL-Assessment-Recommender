@@ -1,7 +1,6 @@
 import os
 import logging
 
-# Load local .env file if it exists
 if os.path.exists(".env"):
     try:
         with open(".env", "r", encoding="utf-8") as f:
@@ -18,7 +17,6 @@ from pydantic_models import ChatRequest, ChatResponse
 from catalog_manager import CatalogManager
 from recommender_agent import RecommenderAgent
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,7 +26,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Initialize singletons at startup
 try:
     logger.info("Initializing Catalog Manager...")
     catalog_manager = CatalogManager()
@@ -41,22 +38,14 @@ except Exception as e:
 
 @app.get("/health")
 async def health():
-    """Returns application status and HTTP 200."""
     return {"status": "ok"}
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """
-    Stateless /chat endpoint.
-    Expects full conversation history in body.
-    Returns the conversational reply, structured recommendations, and end_of_conversation flag.
-    """
     try:
-        # Convert messages to Dict format for processing
         messages_list = [{"role": msg.role, "content": msg.content} for msg in request.messages]
         
         if not messages_list:
-            # Handle empty message history gracefully
             return ChatResponse(
                 reply="Hello! I can help you find the right SHL assessments for your hiring needs. What role or skills are you hiring for?",
                 recommendations=[],
