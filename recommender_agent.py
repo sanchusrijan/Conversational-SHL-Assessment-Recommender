@@ -26,7 +26,22 @@ class RecommenderAgent:
         active = []
         for msg in reversed(messages):
             if msg.get("role") == "assistant":
-                urls = re.findall(r'https://www.shl.com/products/product-catalog/view/[a-zA-Z0-9\-_]+/?', msg.get("content", ""))
+                content = msg.get("content", "")
+                
+                # Try parsing the visible "Referenced: slug1, slug2, ..." line
+                match = re.search(r'(?i)\bReferenced:\s*([a-zA-Z0-9\-_]+(?:\s*,\s*[a-zA-Z0-9\-_]+)*)', content)
+                if match:
+                    slugs_str = match.group(1)
+                    slugs = [s.strip() for s in slugs_str.split(",") if s.strip()]
+                    for slug in slugs:
+                        prod = self.catalog_manager.get_product_by_slug(slug)
+                        if prod and prod not in active:
+                            active.append(prod)
+                    if active:
+                        break
+                
+                # Fallback: try parsing direct URLs from the message content
+                urls = re.findall(r'https://www.shl.com/products/product-catalog/view/[a-zA-Z0-9\-_]+/?', content)
                 if urls:
                     for url in urls:
                         prod = self.catalog_manager.get_product_by_url(url.strip())
@@ -57,7 +72,12 @@ class RecommenderAgent:
     def _build_system_prompt(self, candidates: List[Dict[str, Any]], active_list: List[Dict[str, Any]], turn_count: int) -> str:
         candidates_str = ""
         for idx, prod in enumerate(candidates, 1):
+            url_clean = prod['link'].strip().rstrip('/')
+            parts = url_clean.split('/')
+            slug = parts[-1].lower().strip() if parts else ""
+            
             candidates_str += f"[{idx}] NAME: {prod['name']}\n"
+            candidates_str += f"    SLUG: {slug}\n"
             candidates_str += f"    URL: {prod['link']}\n"
             candidates_str += f"    TEST_TYPE: {prod['test_type']}\n"
             candidates_str += f"    KEYS: {', '.join(prod['keys'])}\n"
@@ -67,7 +87,14 @@ class RecommenderAgent:
 
         active_list_str = ""
         if active_list:
-            active_list_str = "\n".join([f"- {p['name']} ({p['link']})" for p in active_list])
+            active_list_slugs = []
+            for p in active_list:
+                url_clean = p['link'].strip().rstrip('/')
+                parts = url_clean.split('/')
+                slug = parts[-1].lower().strip() if parts else ""
+                if slug:
+                    active_list_slugs.append(f"- {p['name']} (SLUG: {slug})")
+            active_list_str = "\n".join(active_list_slugs)
         else:
             active_list_str = "None"
 
@@ -94,13 +121,10 @@ These are the ONLY valid products you can recommend. Do NOT recommend any produc
 
 2. **Recommend**:
    - Once you have sufficient context (role, seniority, specific skills, etc.), retrieve matching products from the candidate list and recommend them.
-   - Return between 1 and 10 products.
-   - Your `reply` MUST display these recommendations as a markdown table using the exact format:
-     | # | Name | Test Type | Keys | Duration | Languages | URL |
-     |---|------|-----------|------|----------|-----------|-----|
-     | 1 | Product Name | Test Type Code | Product Keys | Duration | Languages | <Product URL> |
-     Ensure URLs in the table are enclosed in angle brackets, like `<https://www.shl.com/...>`.
-   - The names, URLs, and test types MUST match the candidate list exactly.
+   - Return between 1 and 10 products in the "recommendations" structured array.
+   - Your "reply" MUST be a short, natural-language conversational summary only (e.g. acknowledging the recommendations, explaining how they fit, referencing count and key themes).
+   - Your "reply" MUST end with a visible reference line listing the slugs of the recommended products in the exact format: "Referenced: slug1, slug2, ...". Do NOT include any markdown table, list of URLs, or repeated listing of names/URLs/durations inside the "reply" string. The "recommendations" array is the single source of truth.
+   - The names, URLs, and test types in the "recommendations" list MUST match the candidate list exactly.
 
 3. **Refine**:
    - If the user adds or changes constraints mid-conversation (e.g. "add a cognitive test", "remove personality", "make it Spanish"), update the active shortlist accordingly.
@@ -116,7 +140,7 @@ These are the ONLY valid products you can recommend. Do NOT recommend any produc
 
 6. **Turn Cap Handling (CRITICAL)**:
    - If the total messages in history is 6 or more, we are nearing the 8-turn budget limit.
-   - You MUST skip any further clarification. You MUST commit to a best-effort recommendation shortlist of 1-10 assessments from the candidate list, present them in the markdown table, and set `end_of_conversation: true`.
+   - You MUST skip any further clarification. You MUST commit to a best-effort recommendation shortlist of 1-10 assessments from the candidate list, set `end_of_conversation: true`, and provide a short conversational summary ending with the "Referenced: slug1, slug2, ..." line in `reply` (no markdown tables).
 
 ---
 ### Response Format Guidelines:
@@ -124,7 +148,7 @@ You must respond with a single, valid JSON object matching the schema below. Do 
 
 ```json
 {{
-  "reply": "Your natural language response to the user, including the markdown table if recommendations are committed.",
+  "reply": "Your natural language response to the user. This must be a short, conversational summary only, ending with the Referenced: slug1, slug2, ... line. Do NOT include markdown tables or list the product names/URLs/durations field-by-field here.",
   "recommendations": [
     {{
       "name": "Exact Name of Assessment from Candidate list",
@@ -136,8 +160,8 @@ You must respond with a single, valid JSON object matching the schema below. Do 
 }}
 ```
 
-- When recommending: `recommendations` list must contain 1-10 products, and the markdown table must be in the `reply`.
-- When clarifying/refusing: `recommendations` list must be `[]` (empty), and NO markdown table in `reply`.
+- When recommending: `recommendations` list must contain 1-10 products, and the `reply` should contain a short conversational summary ending with "Referenced: slug1, slug2, ...". Do NOT include any markdown tables or repeated listings of names/URLs/durations in `reply`.
+- When clarifying/refusing: `recommendations` list must be `[]` (empty).
 - Set `end_of_conversation: true` ONLY when the user is satisfied and you've committed to a shortlist, or if you've reached the turn cap limit.
 """
         return prompt
@@ -253,6 +277,21 @@ You must respond with a single, valid JSON object matching the schema below. Do 
                             test_type=matched["test_type"]
                         ))
                 chat_res.recommendations = verified_recs
+                
+                # Append a visible, natural-reading reference line of slugs for stateless history extraction
+                if verified_recs:
+                    slugs_list = []
+                    for r in verified_recs:
+                        url_clean = r.url.strip().rstrip('/')
+                        parts = url_clean.split('/')
+                        slug = parts[-1].lower().strip() if parts else ""
+                        if slug:
+                            slugs_list.append(slug)
+                    
+                    if slugs_list:
+                        # Strip any existing Referenced line to avoid duplicates and ensure clean formatting
+                        reply_clean = re.sub(r'(?i)\n*\bReferenced:\s*[a-zA-Z0-9\-_]+(?:\s*,\s*[a-zA-Z0-9\-_]+)*\b\.?', '', chat_res.reply).strip()
+                        chat_res.reply = reply_clean + f"\n\nReferenced: {', '.join(slugs_list)}"
                 
                 return chat_res
                 

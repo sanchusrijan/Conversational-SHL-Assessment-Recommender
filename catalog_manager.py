@@ -21,6 +21,13 @@ def normalize_name(name: str) -> str:
     name_clean = re.sub(r'[\s\-]+', '', name_clean)
     return name_clean
 
+def extract_slug(url: str) -> str:
+    url_clean = url.strip().rstrip('/')
+    parts = url_clean.split('/')
+    if parts:
+        return parts[-1].lower().strip()
+    return ""
+
 class CatalogManager:
     def __init__(self, catalog_path: str = CATALOG_PATH, trace_recs_path: str = TRACE_RECS_PATH):
         self.catalog_path = catalog_path
@@ -28,6 +35,7 @@ class CatalogManager:
         self.products: List[Dict[str, Any]] = []
         self.products_by_normalized_name: Dict[str, Dict[str, Any]] = {}
         self.products_by_url: Dict[str, Dict[str, Any]] = {}
+        self.products_by_slug: Dict[str, Dict[str, Any]] = {}
         self.trace_overrides: Dict[str, Dict[str, Any]] = {}
         
         self._load_trace_recs()
@@ -107,6 +115,9 @@ class CatalogManager:
         for prod in self.products:
             self.products_by_normalized_name[normalize_name(prod["name"])] = prod
             self.products_by_url[prod["link"].lower().strip()] = prod
+            slug = extract_slug(prod["link"])
+            if slug:
+                self.products_by_slug[slug] = prod
 
     def get_product_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         norm = normalize_name(name)
@@ -114,6 +125,9 @@ class CatalogManager:
 
     def get_product_by_url(self, url: str) -> Optional[Dict[str, Any]]:
         return self.products_by_url.get(url.lower().strip())
+
+    def get_product_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        return self.products_by_slug.get(slug.lower().strip())
 
     def search(self, query: str, limit: int = 30) -> List[Dict[str, Any]]:
         if not query:
